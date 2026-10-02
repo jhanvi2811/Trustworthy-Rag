@@ -10,8 +10,10 @@ EMBEDDING_MODEL: "sentence-transformers/all-MiniLM-L6-v2"
 # Alternative: "BAAI/bge-m3"
 
 # LLM for generation (choose based on available resources)
-LLM_PROVIDER: "openai_compatible"  # Options: ollama, openai, openai_compatible
-LLM_MODEL: "llama3.3:70b"
+# LLM_PROVIDER: "openai_compatible"
+LLM_PROVIDER: "ollama"  # Options: ollama, openai, openai_compatible
+# LLM_MODEL: "llama3.3:70b"
+LLM_MODEL: "mistral:7b"
 
 # NLI model for factual verification
 NLI_MODEL: "facebook/bart-large-mnli"
@@ -56,3 +58,4 @@ MAX_NEW_TOKENS: 512
 # ===========================================
 LOG_LEVEL: "INFO"
 MLFLOW_TRACKING_URI: "mlruns"
+

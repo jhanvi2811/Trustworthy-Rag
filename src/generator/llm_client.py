@@ -440,6 +440,11 @@ class OllamaClient(BaseLLMClient):
     def generate(self, prompt: str, **kwargs) -> str:
         """
         Generate text using Ollama's /api/generate endpoint.
+
+        Retries once on a transient failure (empty response or a
+        5xx from the Ollama server) before giving up, since these
+        are usually caused by the local server being momentarily
+        overloaded on CPU-only inference rather than a real error.
         """
 
         url = f"{self.api_url}/api/generate"
@@ -456,45 +461,80 @@ class OllamaClient(BaseLLMClient):
                 "num_predict": kwargs.get(
                     "max_tokens",
                     self.max_tokens
-                )
+                ),
+                # Explicit repetition controls: Ollama/llama.cpp's
+                # defaults are not always enough to stop a quantized
+                # CPU model from emitting duplicated words/phrases
+                # ("seeds seeds", "The The The"). Raising the repeat
+                # penalty and giving it a look-back window fixes this.
+                "repeat_penalty": 1.3,
+                "repeat_last_n": 64,
+                "top_k": 40,
+                "top_p": 0.9,
+                # Force pure CPU inference. A partial CPU/GPU split
+                # (seen in `ollama ps` as e.g. 86%/14% CPU/GPU) can
+                # be unstable on laptops with limited VRAM and is a
+                # known source of intermittent 500 Internal Server
+                # Errors from Ollama mid-generation.
+                "num_gpu": 0
             }
         }
 
-        try:
-            logger.debug(
-                f"Sending request to Ollama: {prompt[:80]}..."
-            )
+        max_attempts = 2
+        last_error: Optional[Exception] = None
 
-            response = requests.post(
-                url,
-                headers=self.headers,
-                json=data,
-                timeout=300
-            )
-
-            response.raise_for_status()
-
-            result = response.json()
-
-            generated_text = result.get("response", "")
-
-            if not generated_text:
-                raise RuntimeError(
-                    "Ollama returned an empty response."
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.debug(
+                    f"Sending request to Ollama "
+                    f"(attempt {attempt}/{max_attempts}): "
+                    f"{prompt[:80]}..."
                 )
 
-            return generated_text.strip()
+                response = requests.post(
+                    url,
+                    headers=self.headers,
+                    json=data,
+                    timeout=300
+                )
 
-        except requests.exceptions.ConnectionError:
-            logger.error(
-                "Could not connect to Ollama. "
-                "Make sure Ollama is installed and running."
-            )
-            raise
+                response.raise_for_status()
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama API error: {e}")
-            raise
+                result = response.json()
+
+                generated_text = result.get("response", "")
+
+                if not generated_text:
+                    raise RuntimeError(
+                        "Ollama returned an empty response."
+                    )
+
+                return generated_text.strip()
+
+            except requests.exceptions.ConnectionError as e:
+                logger.error(
+                    "Could not connect to Ollama. "
+                    "Make sure Ollama is installed and running."
+                )
+                last_error = e
+
+            except requests.exceptions.RequestException as e:
+                logger.error(
+                    f"Ollama API error (attempt {attempt}/"
+                    f"{max_attempts}): {e}"
+                )
+                last_error = e
+
+            except RuntimeError as e:
+                logger.warning(
+                    f"{e} (attempt {attempt}/{max_attempts})"
+                )
+                last_error = e
+
+            if attempt < max_attempts:
+                logger.info("Retrying Ollama request...")
+
+        raise last_error
 
     def chat(
         self,
@@ -519,45 +559,71 @@ class OllamaClient(BaseLLMClient):
                 "num_predict": kwargs.get(
                     "max_tokens",
                     self.max_tokens
-                )
+                ),
+                "repeat_penalty": 1.3,
+                "repeat_last_n": 64,
+                "top_k": 40,
+                "top_p": 0.9,
+                "num_gpu": 0
             }
         }
 
-        try:
-            logger.debug("Sending chat request to Ollama...")
+        max_attempts = 2
+        last_error: Optional[Exception] = None
 
-            response = requests.post(
-                url,
-                headers=self.headers,
-                json=data,
-                timeout=300
-            )
-
-            response.raise_for_status()
-
-            result = response.json()
-
-            message = result.get("message", {})
-
-            generated_text = message.get("content", "")
-
-            if not generated_text:
-                raise RuntimeError(
-                    "Ollama returned an empty chat response."
+        for attempt in range(1, max_attempts + 1):
+            try:
+                logger.debug(
+                    f"Sending chat request to Ollama "
+                    f"(attempt {attempt}/{max_attempts})..."
                 )
 
-            return generated_text.strip()
+                response = requests.post(
+                    url,
+                    headers=self.headers,
+                    json=data,
+                    timeout=300
+                )
 
-        except requests.exceptions.ConnectionError:
-            logger.error(
-                "Could not connect to Ollama. "
-                "Make sure Ollama is running."
-            )
-            raise
+                response.raise_for_status()
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"Ollama chat API error: {e}")
-            raise
+                result = response.json()
+
+                message = result.get("message", {})
+
+                generated_text = message.get("content", "")
+
+                if not generated_text:
+                    raise RuntimeError(
+                        "Ollama returned an empty chat response."
+                    )
+
+                return generated_text.strip()
+
+            except requests.exceptions.ConnectionError as e:
+                logger.error(
+                    "Could not connect to Ollama. "
+                    "Make sure Ollama is running."
+                )
+                last_error = e
+
+            except requests.exceptions.RequestException as e:
+                logger.error(
+                    f"Ollama chat API error (attempt {attempt}/"
+                    f"{max_attempts}): {e}"
+                )
+                last_error = e
+
+            except RuntimeError as e:
+                logger.warning(
+                    f"{e} (attempt {attempt}/{max_attempts})"
+                )
+                last_error = e
+
+            if attempt < max_attempts:
+                logger.info("Retrying Ollama chat request...")
+
+        raise last_error
 
     def test_connection(self) -> bool:
         """Test local Ollama connection."""
